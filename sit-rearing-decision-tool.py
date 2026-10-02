@@ -226,16 +226,29 @@ with tab4:
                     min(4.0, max_day), 0.25)
 
     seen = d[d.day <= now]
-    last24 = seen[seen.day >= now - 1]
-    slope = (np.polyfit(last24.day, last24.nh3_ppm, 1)[0]
-             if len(last24) > 2 else 0.0)
     cue = THRESHOLDS["slope_cue_ppm_per_day"]
 
+    def slope_at(t):
+        w = seen[(seen.day <= t) & (seen.day >= t - 1)]
+        return np.polyfit(w.day, w.nh3_ppm, 1)[0] if len(w) > 2 else 0.0
+
+    # Evaluate the cue at every logged point so far; once it fires it stays on.
+    times = seen.day.values[seen.day.values >= 1]
+    slopes = np.array([slope_at(t) for t in times]) if len(times) else np.array([])
+    slope = slopes[-1] if len(slopes) else 0.0
+    fired = np.where(slopes > cue)[0]
+    cue_day = float(times[fired[0]]) if fired.size else None
+    current = float(seen.nh3_ppm.iloc[-1])
+
     c1, c2 = st.columns(2)
-    c1.metric("Current NH₃", f"{seen.nh3_ppm.iloc[-1]:.1f} ppm")
+    c1.metric("Current NH₃", f"{current:.1f} ppm")
     c2.metric("24-h slope", f"{slope:.1f} ppm/day")
-    if slope > cue:
-        st.error(f"**Apply suppressant to this tray** (slope > {cue:.0f} ppm/day).")
+    if cue_day is not None:
+        st.error(f"**Apply suppressant to this tray** — slope exceeded {cue:.0f} ppm/day "
+                 f"on day {cue_day:.2f}.")
+    elif current > NIOSH_REL:
+        st.error(f"**Apply suppressant to this tray** — NH₃ above the "
+                 f"{NIOSH_REL:.0f} ppm REL.")
     else:
         st.success("**Leave it** — no suppressant needed on this tray.")
 
@@ -245,6 +258,14 @@ with tab4:
                               name="Logged NH₃"))
     fig4.add_hline(y=NIOSH_REL, line_dash="dash", line_color="grey",
                    annotation_text="NIOSH REL 25 ppm", annotation_position="top left")
+    if cue_day is not None:
+        y_cue = float(seen.loc[seen.day == cue_day, "nh3_ppm"].iloc[0])
+        fig4.add_trace(go.Scatter(x=[cue_day], y=[y_cue], mode="markers+text",
+                                  marker=dict(symbol="triangle-down", size=14,
+                                              color="#B22222"),
+                                  text=["  Slope cue: apply suppressant"],
+                                  textposition="middle left",
+                                  textfont=dict(color="#B22222")))
     fig4.update_layout(xaxis_title="Day post-seeding", yaxis_title="NH₃ (ppm)",
                        xaxis_range=[0, max_day],
                        yaxis_range=[0, max(d.nh3_ppm.max() * 1.15, 30)],
